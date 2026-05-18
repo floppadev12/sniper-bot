@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 
+# Keep this True while testing.
+# Set to False when you add a real TikTok scraper.
 ENABLE_TEST_VIDEO = True
 
 
@@ -16,11 +18,15 @@ class TikTokVideo:
 
 async def get_latest_videos(username: str) -> list[TikTokVideo]:
     """
-    This function is the TikTok data source.
+    This is the TikTok data source.
 
-    Right now, it returns a fake test video so you can test the Discord bot.
+    Right now, it returns a fake test video so you can confirm that:
+    - Discord commands work
+    - Railway works
+    - Postgres works
+    - Alerts work
 
-    Later, replace the test section with your TikTok scraper.
+    Later, replace this with your real TikTok scraper/API.
 
     The bot needs each video to have:
     - video_id
@@ -41,5 +47,5 @@ async def get_latest_videos(username: str) -> list[TikTokVideo]:
             )
         ]
 
-    # TODO: Replace this part with your real TikTok scraper.
+    # TODO: Replace this with your real TikTok scraper.
     return []
