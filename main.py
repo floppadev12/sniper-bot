@@ -440,6 +440,8 @@ class ChallengeBot(discord.Client):
                 logger.exception("Failed fetching TikTok videos for @%s", username)
                 continue
 
+            logger.info("Fetched %s videos for @%s", len(latest_videos), username)
+
             for video in latest_videos:
                 was_inserted = await self.save_seen_video(guild_id_str, video)
 
