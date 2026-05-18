@@ -266,7 +266,7 @@ class ChallengeBot(discord.Client):
             creator_text = "\n".join(f"- `@{row['username']}`" for row in rows)
 
             await interaction.response.send_message(
-                f"Monitoring these TikTok creators for `challenge`:\n{creator_text}",
+                f"Monitoring these TikTok creators for `{FIXED_KEYWORD}`:\n{creator_text}",
                 ephemeral=True,
             )
 
@@ -286,12 +286,67 @@ class ChallengeBot(discord.Client):
 
             result = await bot.check_guild(interaction.guild.id)
 
+            note = ""
+            if not result["alert_channel_set"]:
+                note = "\n⚠️ No alert channel is set. Use `/setchannel` first."
+
             await interaction.followup.send(
                 (
                     "✅ Manual check finished.\n"
                     f"Creators checked: `{result['creators_checked']}`\n"
                     f"New videos found: `{result['new_videos']}`\n"
                     f"Challenge hits sent: `{result['alerts_sent']}`"
+                    f"{note}"
+                ),
+                ephemeral=True,
+            )
+
+        @self.tree.command(
+            name="debug",
+            description="Debug bot database state",
+        )
+        async def debug(interaction: discord.Interaction):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "This command must be used inside a Discord server.",
+                    ephemeral=True,
+                )
+                return
+
+            assert bot.db_pool is not None
+
+            guild_id_str = str(interaction.guild.id)
+
+            creators = await bot.db_pool.fetch(
+                """
+                SELECT username
+                FROM creators
+                WHERE guild_id = $1
+                ORDER BY username ASC;
+                """,
+                guild_id_str,
+            )
+
+            settings = await bot.db_pool.fetchrow(
+                """
+                SELECT alert_channel_id
+                FROM guild_settings
+                WHERE guild_id = $1;
+                """,
+                guild_id_str,
+            )
+
+            creator_text = "\n".join(f"- @{row['username']}" for row in creators)
+            if not creator_text:
+                creator_text = "No creators found."
+
+            alert_channel_id = settings["alert_channel_id"] if settings else "Not set"
+
+            await interaction.response.send_message(
+                (
+                    f"**Guild ID:** `{guild_id_str}`\n"
+                    f"**Alert channel ID:** `{alert_channel_id}`\n"
+                    f"**Creators:**\n{creator_text}"
                 ),
                 ephemeral=True,
             )
@@ -330,33 +385,6 @@ class ChallengeBot(discord.Client):
 
         guild_id_str = str(guild_id)
 
-        settings = await self.db_pool.fetchrow(
-            """
-            SELECT alert_channel_id
-            FROM guild_settings
-            WHERE guild_id = $1;
-            """,
-            guild_id_str,
-        )
-
-        if not settings or not settings["alert_channel_id"]:
-            logger.info("Guild %s has no alert channel set", guild_id)
-            return {
-                "creators_checked": 0,
-                "new_videos": 0,
-                "alerts_sent": 0,
-            }
-
-        channel = self.get_channel(int(settings["alert_channel_id"]))
-
-        if not isinstance(channel, discord.TextChannel):
-            logger.warning("Alert channel not found for guild %s", guild_id)
-            return {
-                "creators_checked": 0,
-                "new_videos": 0,
-                "alerts_sent": 0,
-            }
-
         creators = await self.db_pool.fetch(
             """
             SELECT username
@@ -366,6 +394,37 @@ class ChallengeBot(discord.Client):
             """,
             guild_id_str,
         )
+
+        settings = await self.db_pool.fetchrow(
+            """
+            SELECT alert_channel_id
+            FROM guild_settings
+            WHERE guild_id = $1;
+            """,
+            guild_id_str,
+        )
+
+        alert_channel_set = bool(settings and settings["alert_channel_id"])
+
+        if not alert_channel_set:
+            logger.info("Guild %s has no alert channel set", guild_id)
+            return {
+                "alert_channel_set": False,
+                "creators_checked": len(creators),
+                "new_videos": 0,
+                "alerts_sent": 0,
+            }
+
+        channel = self.get_channel(int(settings["alert_channel_id"]))
+
+        if not isinstance(channel, discord.TextChannel):
+            logger.warning("Alert channel not found for guild %s", guild_id)
+            return {
+                "alert_channel_set": False,
+                "creators_checked": len(creators),
+                "new_videos": 0,
+                "alerts_sent": 0,
+            }
 
         creators_checked = 0
         new_videos = 0
@@ -404,6 +463,7 @@ class ChallengeBot(discord.Client):
             await asyncio.sleep(3)
 
         return {
+            "alert_channel_set": True,
             "creators_checked": creators_checked,
             "new_videos": new_videos,
             "alerts_sent": alerts_sent,
@@ -460,7 +520,12 @@ class ChallengeBot(discord.Client):
 
 
 def normalize_username(username: str) -> str:
-    return username.strip().replace("@", "").lower()
+    username = username.strip()
+
+    if username.startswith("@"):
+        username = username[1:]
+
+    return username.lower()
 
 
 def video_matches_challenge(video: TikTokVideo) -> bool:
