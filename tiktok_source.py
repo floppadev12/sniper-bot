@@ -16,6 +16,7 @@ class TikTokVideo:
     description: str
     video_url: str
     posted_at: datetime | None
+    view_count: int | None = None
 
 
 def _parse_timestamp(value) -> datetime | None:
@@ -77,6 +78,22 @@ def _extract_video_url(username: str, entry: dict, video_id: str) -> str:
     return f"https://www.tiktok.com/@{username}/video/{video_id}"
 
 
+def _extract_view_count(entry: dict) -> int | None:
+    """
+    yt-dlp usually returns TikTok views in view_count.
+    Sometimes TikTok blocks or omits this value, so None is valid.
+    """
+    value = entry.get("view_count")
+
+    if value is None:
+        return None
+
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
 def _fetch_latest_videos_sync(username: str, max_videos: int = 5) -> list[TikTokVideo]:
     """
     Blocking yt-dlp work happens here.
@@ -121,6 +138,7 @@ def _fetch_latest_videos_sync(username: str, max_videos: int = 5) -> list[TikTok
         description = _extract_description(entry)
         video_url = _extract_video_url(username, entry, video_id)
         posted_at = _parse_timestamp(entry.get("timestamp"))
+        view_count = _extract_view_count(entry)
 
         videos.append(
             TikTokVideo(
@@ -129,11 +147,42 @@ def _fetch_latest_videos_sync(username: str, max_videos: int = 5) -> list[TikTok
                 description=description,
                 video_url=video_url,
                 posted_at=posted_at,
+                view_count=view_count,
             )
         )
 
     logger.info("Fetched %s videos for @%s", len(videos), username)
     return videos
+
+
+def _fetch_video_stats_sync(video_url: str) -> dict | None:
+    """
+    Fetch stats for one TikTok video URL.
+    Used by the daily tracker to check if active videos reached 1M views.
+    """
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "ignoreerrors": True,
+        "socket_timeout": 20,
+        "retries": 2,
+    }
+
+    logger.info("Fetching TikTok video stats: %s", video_url)
+
+    with YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(video_url, download=False)
+
+    if not info:
+        logger.warning("No TikTok stats returned for %s", video_url)
+        return None
+
+    return {
+        "view_count": _extract_view_count(info),
+        "description": _extract_description(info),
+        "posted_at": _parse_timestamp(info.get("timestamp")),
+    }
 
 
 async def get_latest_videos(username: str) -> list[TikTokVideo]:
@@ -145,5 +194,14 @@ async def get_latest_videos(username: str) -> list[TikTokVideo]:
     - description to check for "challenge"
     - video_url for the Discord alert
     - posted_at for the Discord alert date
+    - view_count for initial tracking data, if available
     """
     return await asyncio.to_thread(_fetch_latest_videos_sync, username, 5)
+
+
+async def get_video_stats(video_url: str) -> dict | None:
+    """
+    Return updated stats for one TikTok video.
+    The daily tracker mainly uses view_count.
+    """
+    return await asyncio.to_thread(_fetch_video_stats_sync, video_url)
