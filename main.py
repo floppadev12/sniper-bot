@@ -541,7 +541,7 @@ class ChallengeBot(discord.Client):
 
             for index, row in enumerate(rows, start=1):
                 creator = row["creator_username"] or "unknown"
-                description = truncate_description(row["description"], 60)
+                description = shorten_description(row["description"], 60)
                 view_count = row["view_count"]
                 views = f"{int(view_count):,}" if view_count is not None else "Unknown"
                 url = row["video_url"]
