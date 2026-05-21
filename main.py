@@ -600,6 +600,21 @@ class ChallengeBot(discord.Client):
                         value="track_now",
                         description="Run the active video 1M check",
                     ),
+                    discord.SelectOption(
+                        label="Test Detect Message",
+                        value="test_detect_message",
+                        description="Send a sample challenge detect alert",
+                    ),
+                    discord.SelectOption(
+                        label="Test 1M Hit Message",
+                        value="test_hit_message",
+                        description="Send a sample 1M hit alert",
+                    ),
+                    discord.SelectOption(
+                        label="Test Daily Report",
+                        value="test_daily_report",
+                        description="Send a sample daily tracking report",
+                    ),
                 ]
 
                 super().__init__(
@@ -774,6 +789,47 @@ class ChallengeBot(discord.Client):
                             f"Still active: `{result['active_remaining']}`"
                             f"{note}"
                         )
+
+                    elif selected == "test_detect_message":
+                        channel = interaction.channel
+                        if not isinstance(channel, discord.TextChannel):
+                            message = "This test must be run in a text channel."
+                        else:
+                            sample_video = TikTokVideo(
+                                creator_username="samplecreator",
+                                video_id="0000000000000000000",
+                                video_url="https://www.tiktok.com/@samplecreator/video/0000000000000000000",
+                                description="TEST MESSAGE - sample challenge video detected by the bot.",
+                                posted_at=datetime.now(timezone.utc),
+                            )
+                            await send_challenge_alert(channel, sample_video)
+                            message = "✅ Sent a test challenge detect message in this channel."
+
+                    elif selected == "test_hit_message":
+                        channel = interaction.channel
+                        if not isinstance(channel, discord.TextChannel):
+                            message = "This test must be run in a text channel."
+                        else:
+                            await send_milestone_alert(
+                                channel=channel,
+                                creator_username="samplecreator",
+                                description="TEST MESSAGE - sample tracked video reached 1M views.",
+                                video_url="https://www.tiktok.com/@samplecreator/video/0000000000000000000",
+                            )
+                            message = "✅ Sent a test 1M hit message in this channel."
+
+                    elif selected == "test_daily_report":
+                        channel = interaction.channel
+                        if not isinstance(channel, discord.TextChannel):
+                            message = "This test must be run in a text channel."
+                        else:
+                            await send_daily_tracking_report(
+                                channel=channel,
+                                active_checked=3,
+                                milestones_hit=1,
+                                active_remaining=2,
+                            )
+                            message = "✅ Sent a test daily report in this channel."
 
                     else:
                         message = "Unknown test option."
