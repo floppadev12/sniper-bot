@@ -500,6 +500,66 @@ class ChallengeBot(discord.Client):
             )
 
         @self.tree.command(
+            name="activelist",
+            description="Show active videos currently being tracked for 1M views",
+        )
+        async def activelist(interaction: discord.Interaction):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "This command must be used inside a Discord server.",
+                    ephemeral=True,
+                )
+                return
+
+            assert bot.db_pool is not None
+
+            rows = await bot.db_pool.fetch(
+                """
+                SELECT creator_username, video_url, description, view_count, tracked_at
+                FROM seen_videos
+                WHERE guild_id = $1
+                  AND tracking_status = 'active'
+                ORDER BY tracked_at ASC NULLS LAST, detected_at ASC
+                LIMIT 25;
+                """,
+                str(interaction.guild.id),
+            )
+
+            active_count = await bot.get_active_tracking_count(str(interaction.guild.id))
+
+            if not rows:
+                await interaction.response.send_message(
+                    "No active videos are currently being tracked for 1M views.",
+                    ephemeral=True,
+                )
+                return
+
+            lines = [
+                f"Active videos tracking for 1M: `{active_count}/{MAX_ACTIVE_TRACKED_VIDEOS}`",
+                "",
+            ]
+
+            for index, row in enumerate(rows, start=1):
+                creator = row["creator_username"] or "unknown"
+                description = truncate_description(row["description"], 60)
+                view_count = row["view_count"]
+                views = f"{int(view_count):,}" if view_count is not None else "Unknown"
+                url = row["video_url"]
+
+                lines.append(
+                    f'{index}. **@{creator}** | `{views}` views | "{description}" | [VIEW HERE]({url})'
+                )
+
+            if active_count > len(rows):
+                lines.append("")
+                lines.append(f"Showing first {len(rows)} active videos.")
+
+            await interaction.response.send_message(
+                "\n".join(lines)[:1900],
+                ephemeral=True,
+            )
+
+        @self.tree.command(
             name="debug",
             description="Debug bot database state",
         )
@@ -1039,13 +1099,19 @@ def shorten_description(description: str, limit: int = MILESTONE_DESCRIPTION_LIM
 
 
 def build_usage_bar(active_count: int, max_count: int) -> str:
+    green_square = "\U0001f7e9"
+    black_square = "\u2b1b"
+
     if max_count <= 0:
-        return "⬛⬛⬛⬛⬛⬛⬛⬛⬛⬛"
+        return " ".join([black_square] * 10)
 
     filled_blocks = min(10, max(0, active_count * 10 // max_count))
+    if active_count > 0 and filled_blocks == 0:
+        filled_blocks = 1
+
     empty_blocks = 10 - filled_blocks
 
-    return "🟩" * filled_blocks + "⬛" * empty_blocks
+    return " ".join([green_square] * filled_blocks + [black_square] * empty_blocks)
 
 
 async def send_challenge_alert(channel: discord.TextChannel, video: TikTokVideo):
