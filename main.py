@@ -791,45 +791,84 @@ class ChallengeBot(discord.Client):
                         )
 
                     elif selected == "test_detect_message":
-                        channel = interaction.channel
-                        if not isinstance(channel, discord.TextChannel):
-                            message = "This test must be run in a text channel."
+                        settings = await bot.db_pool.fetchrow(
+                            """
+                            SELECT alert_channel_id
+                            FROM guild_settings
+                            WHERE guild_id = $1;
+                            """,
+                            guild_id_str,
+                        )
+
+                        if not settings or not settings["alert_channel_id"]:
+                            message = "No challenge alert channel is set. Use `/setchannel` first."
                         else:
-                            sample_video = TikTokVideo(
-                                creator_username="samplecreator",
-                                video_id="0000000000000000000",
-                                video_url="https://www.tiktok.com/@samplecreator/video/0000000000000000000",
-                                description="TEST MESSAGE - sample challenge video detected by the bot.",
-                                posted_at=datetime.now(timezone.utc),
-                            )
-                            await send_challenge_alert(channel, sample_video)
-                            message = "✅ Sent a test challenge detect message in this channel."
+                            channel = await bot.resolve_text_channel(settings["alert_channel_id"])
+
+                            if not channel:
+                                message = "The configured challenge alert channel could not be found. Run `/setchannel` again."
+                            else:
+                                sample_video = TikTokVideo(
+                                    creator_username="samplecreator",
+                                    video_id="0000000000000000000",
+                                    video_url="https://www.tiktok.com/@samplecreator/video/0000000000000000000",
+                                    description="TEST MESSAGE - sample challenge video detected by the bot.",
+                                    posted_at=datetime.now(timezone.utc),
+                                )
+                                await send_challenge_alert(channel, sample_video)
+                                message = f"✅ Sent a test challenge detect message to {channel.mention}."
 
                     elif selected == "test_hit_message":
-                        channel = interaction.channel
-                        if not isinstance(channel, discord.TextChannel):
-                            message = "This test must be run in a text channel."
+                        settings = await bot.db_pool.fetchrow(
+                            """
+                            SELECT milestone_channel_id
+                            FROM guild_settings
+                            WHERE guild_id = $1;
+                            """,
+                            guild_id_str,
+                        )
+
+                        if not settings or not settings["milestone_channel_id"]:
+                            message = "No 1M hit channel is set. Use `/setmilestonechannel` first."
                         else:
-                            await send_milestone_alert(
-                                channel=channel,
-                                creator_username="samplecreator",
-                                description="TEST MESSAGE - sample tracked video reached 1M views.",
-                                video_url="https://www.tiktok.com/@samplecreator/video/0000000000000000000",
-                            )
-                            message = "✅ Sent a test 1M hit message in this channel."
+                            channel = await bot.resolve_text_channel(settings["milestone_channel_id"])
+
+                            if not channel:
+                                message = "The configured 1M hit channel could not be found. Run `/setmilestonechannel` again."
+                            else:
+                                await send_milestone_alert(
+                                    channel=channel,
+                                    creator_username="samplecreator",
+                                    description="TEST MESSAGE - sample tracked video reached 1M views.",
+                                    video_url="https://www.tiktok.com/@samplecreator/video/0000000000000000000",
+                                )
+                                message = f"✅ Sent a test 1M hit message to {channel.mention}."
 
                     elif selected == "test_daily_report":
-                        channel = interaction.channel
-                        if not isinstance(channel, discord.TextChannel):
-                            message = "This test must be run in a text channel."
+                        settings = await bot.db_pool.fetchrow(
+                            """
+                            SELECT daily_report_channel_id
+                            FROM guild_settings
+                            WHERE guild_id = $1;
+                            """,
+                            guild_id_str,
+                        )
+
+                        if not settings or not settings["daily_report_channel_id"]:
+                            message = "No daily report channel is set. Use `/setdailyreportchannel` first."
                         else:
-                            await send_daily_tracking_report(
-                                channel=channel,
-                                active_checked=3,
-                                milestones_hit=1,
-                                active_remaining=2,
-                            )
-                            message = "✅ Sent a test daily report in this channel."
+                            channel = await bot.resolve_text_channel(settings["daily_report_channel_id"])
+
+                            if not channel:
+                                message = "The configured daily report channel could not be found. Run `/setdailyreportchannel` again."
+                            else:
+                                await send_daily_tracking_report(
+                                    channel=channel,
+                                    active_checked=3,
+                                    milestones_hit=1,
+                                    active_remaining=2,
+                                )
+                                message = f"✅ Sent a test daily report to {channel.mention}."
 
                     else:
                         message = "Unknown test option."
