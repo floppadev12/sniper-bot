@@ -559,6 +559,246 @@ class ChallengeBot(discord.Client):
                 ephemeral=True,
             )
 
+        class TestPanelSelect(discord.ui.Select):
+            def __init__(self):
+                options = [
+                    discord.SelectOption(
+                        label="Usage",
+                        value="usage",
+                        description="Show active tracking capacity",
+                    ),
+                    discord.SelectOption(
+                        label="Active List",
+                        value="active_list",
+                        description="Show videos tracking toward 1M",
+                    ),
+                    discord.SelectOption(
+                        label="Creator List",
+                        value="creator_list",
+                        description="Show monitored TikTok creators",
+                    ),
+                    discord.SelectOption(
+                        label="Debug State",
+                        value="debug",
+                        description="Show channel IDs and database counts",
+                    ),
+                    discord.SelectOption(
+                        label="Check Creators Now",
+                        value="check_now",
+                        description="Run the creator scan manually",
+                    ),
+                    discord.SelectOption(
+                        label="Check 1M Tracking Now",
+                        value="track_now",
+                        description="Run the active video 1M check",
+                    ),
+                ]
+
+                super().__init__(
+                    placeholder="Choose a bot function to test",
+                    min_values=1,
+                    max_values=1,
+                    options=options,
+                )
+
+            async def callback(self, interaction: discord.Interaction):
+                if not interaction.guild:
+                    await interaction.response.send_message(
+                        "This panel must be used inside a Discord server.",
+                        ephemeral=True,
+                    )
+                    return
+
+                assert bot.db_pool is not None
+
+                await interaction.response.defer(ephemeral=True, thinking=True)
+
+                guild_id = interaction.guild.id
+                guild_id_str = str(guild_id)
+                selected = self.values[0]
+
+                try:
+                    if selected == "usage":
+                        active_count = await bot.get_active_tracking_count(guild_id_str)
+                        bar = build_usage_bar(active_count, MAX_ACTIVE_TRACKED_VIDEOS)
+                        message = (
+                            f"Usage: `{active_count}/{MAX_ACTIVE_TRACKED_VIDEOS}`\n"
+                            f"{bar}"
+                        )
+
+                    elif selected == "active_list":
+                        rows = await bot.db_pool.fetch(
+                            """
+                            SELECT creator_username, video_url, description, view_count, tracked_at
+                            FROM seen_videos
+                            WHERE guild_id = $1
+                              AND tracking_status = 'active'
+                            ORDER BY tracked_at ASC NULLS LAST, detected_at ASC
+                            LIMIT 25;
+                            """,
+                            guild_id_str,
+                        )
+
+                        active_count = await bot.get_active_tracking_count(guild_id_str)
+
+                        if not rows:
+                            message = "No active videos are currently being tracked for 1M views."
+                        else:
+                            lines = [
+                                f"Active videos tracking for 1M: `{active_count}/{MAX_ACTIVE_TRACKED_VIDEOS}`",
+                                "",
+                            ]
+
+                            for index, row in enumerate(rows, start=1):
+                                creator = row["creator_username"] or "unknown"
+                                description = shorten_description(row["description"], 60)
+                                view_count = row["view_count"]
+                                views = f"{int(view_count):,}" if view_count is not None else "Unknown"
+                                url = row["video_url"]
+
+                                lines.append(
+                                    f'{index}. **@{creator}** | `{views}` views | "{description}" | [VIEW HERE]({url})'
+                                )
+
+                            if active_count > len(rows):
+                                lines.append("")
+                                lines.append(f"Showing first {len(rows)} active videos.")
+
+                            message = "\n".join(lines)
+
+                    elif selected == "creator_list":
+                        rows = await bot.db_pool.fetch(
+                            """
+                            SELECT username
+                            FROM creators
+                            WHERE guild_id = $1
+                            ORDER BY username ASC;
+                            """,
+                            guild_id_str,
+                        )
+
+                        if not rows:
+                            message = "No creators are being monitored yet. Add one with `/creator add`."
+                        else:
+                            creator_text = "\n".join(f"- `@{row['username']}`" for row in rows)
+                            message = (
+                                f"Monitoring these TikTok creators for `{FIXED_KEYWORD}`:\n"
+                                f"{creator_text}"
+                            )
+
+                    elif selected == "debug":
+                        creators = await bot.db_pool.fetch(
+                            """
+                            SELECT username
+                            FROM creators
+                            WHERE guild_id = $1
+                            ORDER BY username ASC;
+                            """,
+                            guild_id_str,
+                        )
+
+                        settings = await bot.db_pool.fetchrow(
+                            """
+                            SELECT alert_channel_id, milestone_channel_id, daily_report_channel_id
+                            FROM guild_settings
+                            WHERE guild_id = $1;
+                            """,
+                            guild_id_str,
+                        )
+
+                        active_count = await bot.get_active_tracking_count(guild_id_str)
+                        archived_count = await bot.db_pool.fetchval(
+                            """
+                            SELECT COUNT(*)
+                            FROM seen_videos
+                            WHERE guild_id = $1
+                              AND tracking_status = 'archived';
+                            """,
+                            guild_id_str,
+                        )
+
+                        creator_text = "\n".join(f"- @{row['username']}" for row in creators)
+                        if not creator_text:
+                            creator_text = "No creators found."
+
+                        alert_channel_id = settings["alert_channel_id"] if settings else "Not set"
+                        milestone_channel_id = settings["milestone_channel_id"] if settings else "Not set"
+                        daily_report_channel_id = settings["daily_report_channel_id"] if settings else "Not set"
+
+                        message = (
+                            f"**Guild ID:** `{guild_id_str}`\n"
+                            f"**Challenge alert channel ID:** `{alert_channel_id}`\n"
+                            f"**1M hit channel ID:** `{milestone_channel_id}`\n"
+                            f"**Daily report channel ID:** `{daily_report_channel_id}`\n"
+                            f"**Active tracked videos:** `{active_count}`\n"
+                            f"**Archived tracked videos:** `{int(archived_count or 0)}`\n"
+                            f"**Creators:**\n{creator_text}"
+                        )
+
+                    elif selected == "check_now":
+                        result = await bot.check_guild(guild_id)
+                        note = ""
+                        if not result["alert_channel_set"]:
+                            note = "\n⚠️ No challenge alert channel is set. Use `/setchannel` first."
+
+                        message = (
+                            "✅ Manual check finished.\n"
+                            f"Creators checked: `{result['creators_checked']}`\n"
+                            f"New videos found: `{result['new_videos']}`\n"
+                            f"Challenge hits sent: `{result['alerts_sent']}`\n"
+                            f"Videos added to active tracking: `{result['tracking_activated']}`"
+                            f"{note}"
+                        )
+
+                    elif selected == "track_now":
+                        result = await bot.check_tracked_videos_for_guild(guild_id)
+                        note = ""
+                        if not result["milestone_channel_set"]:
+                            note += "\n⚠️ No 1M hit channel is set. Use `/setmilestonechannel` first."
+
+                        if not result["daily_report_channel_set"]:
+                            note += "\n⚠️ No daily report channel is set. Use `/setdailyreportchannel` if you want daily reports."
+
+                        message = (
+                            "✅ Tracking check finished.\n"
+                            f"Active videos checked: `{result['active_checked']}`\n"
+                            f"1M hits found: `{result['milestones_hit']}`\n"
+                            f"Still active: `{result['active_remaining']}`"
+                            f"{note}"
+                        )
+
+                    else:
+                        message = "Unknown test option."
+
+                except Exception as exc:
+                    logger.exception("Test panel option failed: %s", selected)
+                    message = f"❌ Test failed: `{exc}`"
+
+                await interaction.followup.send(message[:1900], ephemeral=True)
+
+        class TestPanelView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=300)
+                self.add_item(TestPanelSelect())
+
+        @self.tree.command(
+            name="testpanel",
+            description="Open a panel for testing bot functions",
+        )
+        async def testpanel(interaction: discord.Interaction):
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "This command must be used inside a Discord server.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.response.send_message(
+                "Choose a function to test.",
+                view=TestPanelView(),
+                ephemeral=True,
+            )
+
         @self.tree.command(
             name="debug",
             description="Debug bot database state",
