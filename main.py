@@ -1,7 +1,8 @@
 import os
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import discord
@@ -19,7 +20,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 
 CHECK_INTERVAL_HOURS = 1
-DAILY_TRACKING_CHECK_HOURS = 24
+TRACKING_INTERVAL_HOURS = 1
+DAILY_REPORT_HOUR = 20
+DAILY_REPORT_MINUTE = 0
+DAILY_REPORT_TIMEZONE = "Europe/Berlin"
 
 FIXED_KEYWORD = "challenge"
 VIEW_MILESTONE = 1_000_000
@@ -66,14 +70,18 @@ class ChallengeBot(discord.Client):
             logger.info("Slash commands synced globally")
 
         self.hourly_checker.start()
-        self.daily_tracker.start()
+        self.hourly_tracker.start()
+        self.daily_reporter.start()
 
     async def close(self):
         if self.hourly_checker.is_running():
             self.hourly_checker.cancel()
 
-        if self.daily_tracker.is_running():
-            self.daily_tracker.cancel()
+        if self.hourly_tracker.is_running():
+            self.hourly_tracker.cancel()
+
+        if self.daily_reporter.is_running():
+            self.daily_reporter.cancel()
 
         if self.db_pool:
             await self.db_pool.close()
@@ -913,10 +921,11 @@ class ChallengeBot(discord.Client):
     @hourly_checker.before_loop
     async def before_hourly_checker(self):
         await self.wait_until_ready()
-        logger.info("Hourly checker started")
+        logger.info("Hourly creator checker starts in %s hour(s)", CHECK_INTERVAL_HOURS)
+        await asyncio.sleep(CHECK_INTERVAL_HOURS * 60 * 60)
 
-    @tasks.loop(hours=DAILY_TRACKING_CHECK_HOURS)
-    async def daily_tracker(self):
+    @tasks.loop(hours=TRACKING_INTERVAL_HOURS)
+    async def hourly_tracker(self):
         assert self.db_pool is not None
 
         guild_rows = await self.db_pool.fetch(
@@ -932,16 +941,56 @@ class ChallengeBot(discord.Client):
 
             try:
                 result = await self.check_tracked_videos_for_guild(guild_id)
-                logger.info("Daily tracking check for guild %s: %s", guild_id, result)
+                logger.info("Hourly 1M tracking check for guild %s: %s", guild_id, result)
             except Exception:
-                logger.exception("Failed daily tracking check for guild %s", guild_id)
+                logger.exception("Failed hourly 1M tracking check for guild %s", guild_id)
 
             await asyncio.sleep(2)
 
-    @daily_tracker.before_loop
-    async def before_daily_tracker(self):
+    @hourly_tracker.before_loop
+    async def before_hourly_tracker(self):
         await self.wait_until_ready()
-        logger.info("Daily tracker started")
+        logger.info("Hourly 1M tracker starts in %s hour(s)", TRACKING_INTERVAL_HOURS)
+        await asyncio.sleep(TRACKING_INTERVAL_HOURS * 60 * 60)
+
+    @tasks.loop(
+        time=time(
+            hour=DAILY_REPORT_HOUR,
+            minute=DAILY_REPORT_MINUTE,
+            tzinfo=ZoneInfo(DAILY_REPORT_TIMEZONE),
+        )
+    )
+    async def daily_reporter(self):
+        assert self.db_pool is not None
+
+        guild_rows = await self.db_pool.fetch(
+            """
+            SELECT guild_id
+            FROM guild_settings
+            WHERE daily_report_channel_id IS NOT NULL;
+            """
+        )
+
+        for row in guild_rows:
+            guild_id = int(row["guild_id"])
+
+            try:
+                result = await self.send_daily_report_for_guild(guild_id)
+                logger.info("Daily report for guild %s: %s", guild_id, result)
+            except Exception:
+                logger.exception("Failed daily report for guild %s", guild_id)
+
+            await asyncio.sleep(2)
+
+    @daily_reporter.before_loop
+    async def before_daily_reporter(self):
+        await self.wait_until_ready()
+        logger.info(
+            "Daily reporter scheduled for %02d:%02d %s",
+            DAILY_REPORT_HOUR,
+            DAILY_REPORT_MINUTE,
+            DAILY_REPORT_TIMEZONE,
+        )
 
     async def check_guild(self, guild_id: int) -> dict:
         assert self.db_pool is not None
@@ -1061,13 +1110,9 @@ class ChallengeBot(discord.Client):
         )
 
         milestone_channel = None
-        daily_report_channel = None
 
         if settings and settings["milestone_channel_id"]:
             milestone_channel = await self.resolve_text_channel(settings["milestone_channel_id"])
-
-        if settings and settings["daily_report_channel_id"]:
-            daily_report_channel = await self.resolve_text_channel(settings["daily_report_channel_id"])
 
         rows = await self.db_pool.fetch(
             """
@@ -1141,22 +1186,54 @@ class ChallengeBot(discord.Client):
 
         result = {
             "milestone_channel_set": milestone_channel is not None,
-            "daily_report_channel_set": daily_report_channel is not None,
+            "daily_report_channel_set": bool(settings and settings["daily_report_channel_id"]),
             "active_checked": active_checked,
             "milestones_hit": milestones_hit,
             "active_remaining": active_remaining,
         }
 
-        if daily_report_channel:
-            try:
-                await send_daily_tracking_report(
-                    channel=daily_report_channel,
-                    active_checked=active_checked,
-                    milestones_hit=milestones_hit,
-                    active_remaining=active_remaining,
-                )
-            except Exception:
-                logger.exception("Failed sending daily tracking report for guild %s", guild_id)
+        return result
+
+    async def send_daily_report_for_guild(self, guild_id: int) -> dict:
+        assert self.db_pool is not None
+
+        guild_id_str = str(guild_id)
+
+        settings = await self.db_pool.fetchrow(
+            """
+            SELECT daily_report_channel_id
+            FROM guild_settings
+            WHERE guild_id = $1;
+            """,
+            guild_id_str,
+        )
+
+        if not settings or not settings["daily_report_channel_id"]:
+            return {
+                "daily_report_channel_set": False,
+                "active_checked": 0,
+                "milestones_hit": 0,
+                "active_remaining": await self.get_active_tracking_count(guild_id_str),
+            }
+
+        daily_report_channel = await self.resolve_text_channel(settings["daily_report_channel_id"])
+
+        if not daily_report_channel:
+            return {
+                "daily_report_channel_set": False,
+                "active_checked": 0,
+                "milestones_hit": 0,
+                "active_remaining": await self.get_active_tracking_count(guild_id_str),
+            }
+
+        result = await self.check_tracked_videos_for_guild(guild_id)
+
+        await send_daily_tracking_report(
+            channel=daily_report_channel,
+            active_checked=result["active_checked"],
+            milestones_hit=result["milestones_hit"],
+            active_remaining=result["active_remaining"],
+        )
 
         return result
 
